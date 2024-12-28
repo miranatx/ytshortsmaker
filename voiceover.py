@@ -6,6 +6,7 @@ import openai
 import requests
 from PIL import Image, ImageFilter
 from dotenv import load_dotenv
+import random
 
 load_dotenv()
 
@@ -31,28 +32,38 @@ def ensure_output_folder(folder="output"):
 
 # Generate script using OpenAI
 def generate_script():
+    topics = [
+        "craziest historical deaths or assasinations",
+        "bizarre medical practices",
+        "shocking ancient rituals",
+        "wildest historical events",
+        "weird historical moments",
+    ]
+    selected_topic = random.choice(topics)
     prompt = (
-        "Generate a concise 30-second script for a YouTube Short on a historical event "
-        "with a compelling, fast-paced, and direct story; include a call-to-action at "
-        "the end saying: Like and subscribe for more history stories; format the text "
-        "as what the narrator says for TTS API input."
+        f"Write a gripping 30-second YouTube Short script about {selected_topic}. "
+        f"The script should be a fast-paced, attention-grabbing monologue formatted as plain text, "
+        f"with no stage directions, music cues, or narrator labels. End with a call-to-action: "
+        f"'Like and subscribe for more shocking history stories!' Focus on crazy facts, surprising twists, "
+        f"or little-known details to appeal to young adults."
     )
     try:
         response = openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "system", "content": "You are a creative and engaging scriptwriter."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=300,
-            temperature=0.7,
+            temperature=0.9,
         )
-        script = response['choices'][0]['message']['content']
+        script = response['choices'][0]['message']['content'].strip()
         print("Script generated successfully!")
         return script
     except Exception as e:
         print(f"Error generating script: {e}")
         return None
+
 
 # Generate voiceover using ElevenLabs API
 def generate_voiceover(script, output_file):
@@ -208,7 +219,7 @@ def main():
             blur_image(
                 os.path.join(images_folder, img),
                 os.path.join(blurred_folder, img),
-                blur_radius=4
+                blur_radius=6
             )
 
     # Step 6: Create video from blurred images
