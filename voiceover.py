@@ -7,21 +7,19 @@ import requests
 from PIL import Image, ImageFilter
 from dotenv import load_dotenv
 import random
+import tempfile
+from pydub import AudioSegment
+import soundfile as sf
+from google.cloud import speech_v1p1beta1 as speech
+import io
 
 load_dotenv()
 
 # API Keys
-#OpenAI API Key
 openai.api_key = os.getenv("OPENAI_API_KEY")
-
-# ElevenLabs API Key
 elevenlabs_api_key = os.getenv("ELEVENLABS_API_KEY")
-
-# Pexels API Key
 pexels_api_key = os.getenv("PEXELS_API_KEY")
-
-elevenlabs_voice_id = "pqHfZKP75CvOlQylNhV4"  # Replace with a valid voice ID
-
+elevenlabs_voice_id = "pqHfZKP75CvOlQylNhV4"
 
 # Ensure output folder exists
 def ensure_output_folder(folder="output"):
@@ -33,7 +31,7 @@ def ensure_output_folder(folder="output"):
 # Generate script using OpenAI
 def generate_script():
     topics = [
-        "craziest historical deaths or assasinations",
+        "craziest historical deaths or assassinations",
         "bizarre medical practices",
         "shocking ancient rituals",
         "wildest historical events",
@@ -64,7 +62,6 @@ def generate_script():
         print(f"Error generating script: {e}")
         return None
 
-
 # Generate voiceover using ElevenLabs API
 def generate_voiceover(script, output_file):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{elevenlabs_voice_id}"
@@ -84,32 +81,8 @@ def generate_voiceover(script, output_file):
     except Exception as e:
         print(f"Error generating voiceover: {e}")
 
-# Determine the main topic of the script using OpenAI
-def determine_topic(script):
-    prompt = (
-        f"Given this script: \"{script}\", determine the main topic in one or two words. "
-        "It should relate broadly to the content but doesn't have to match the exact event. "
-        "For example, for Apollo 11, use 'space'."
-    )
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=20,
-            temperature=0.7,
-        )
-        topic = response['choices'][0]['message']['content'].strip()
-        print(f"Identified Topic: {topic}")
-        return topic
-    except Exception as e:
-        print(f"Error determining topic: {e}")
-        return None
-
 # Fetch images from Pexels API based on the topic
-def fetch_images(topic, output_folder, count=10):
+def fetch_images(topic, output_folder, count=30):  # Increased to 30 images
     url = f"https://api.pexels.com/v1/search?query={topic}&per_page={count}&orientation=portrait"
     headers = {"Authorization": pexels_api_key}
     try:
@@ -142,7 +115,7 @@ def add_motion_to_image(image_path, duration, zoom_start=1.0, zoom_end=1.2):
     zoom_effect = clip.resize(lambda t: zoom_start + (zoom_end - zoom_start) * (t / duration))
     return zoom_effect
 
-# Create video from blurred images and audio with motion
+# Create video from blurred images and audio with rapid-fire effect
 def create_video_from_images_and_audio(images_folder, audio_path, output_video_path, fps=24):
     try:
         images = sorted([os.path.join(images_folder, f) for f in os.listdir(images_folder) if f.endswith((".jpg", ".png"))])
@@ -151,7 +124,7 @@ def create_video_from_images_and_audio(images_folder, audio_path, output_video_p
             return
 
         audio = AudioFileClip(audio_path)
-        duration_per_image = audio.duration / len(images)
+        duration_per_image = max(audio.duration / len(images), 0.5)  # Ensure rapid-fire timing
 
         clips = [
             add_motion_to_image(
@@ -166,12 +139,18 @@ def create_video_from_images_and_audio(images_folder, audio_path, output_video_p
     except Exception as e:
         print(f"Error creating video: {e}")
 
-# Speed up the video by a factor
+
 def speed_up_video(input_path, output_path, speed_factor=1.25):
     try:
+        # Load the video clip
         clip = VideoFileClip(input_path)
+
+        # Speed up the video and audio
         sped_up_clip = clip.fx(vfx.speedx, speed_factor)
-        sped_up_clip.write_videofile(output_path, codec="libx264", audio_codec="aac")
+
+        # Write the sped-up video to a file
+        sped_up_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", fps=24)
+        
         print(f"Sped-up video saved to: {output_path}")
     except Exception as e:
         print(f"Error speeding up video: {e}")
@@ -183,6 +162,32 @@ def delete_images_in_folder(folder):
         print(f"Deleted all images in folder: {folder}")
     except Exception as e:
         print(f"Error deleting images: {e}")
+
+# Function to transcribe audio using Google Cloud Speech-to-Text
+def transcribe_audio_to_text(audio_path):
+    client = speech.SpeechClient()
+
+    # Load the audio file
+    with io.open(audio_path, "rb") as audio_file:
+        content = audio_file.read()
+
+    # Configure the audio settings
+    audio = speech.RecognitionAudio(content=content)
+    config = speech.RecognitionConfig(
+        encoding=speech.RecognitionConfig.AudioEncoding.MP3,
+        sample_rate_hertz=44100,  # Adjust this to match your audio file
+        language_code="en-US",
+    )
+
+    # Perform the transcription
+    response = client.recognize(config=config, audio=audio)
+
+    # Collect the transcriptions
+    transcriptions = []
+    for result in response.results:
+        transcriptions.append(result.alternatives[0].transcript)
+
+    return "\n".join(transcriptions)
 
 # Main function to run the pipeline
 def main():
@@ -200,42 +205,32 @@ def main():
     # Step 2: Generate the voiceover
     voiceover_file = os.path.join(output_folder, "voiceover.mp3")
     print("\nGenerating voiceover...")
-    generate_voiceover(script, voiceover_file)
+    # generate_voiceover(script, voiceover_file)
 
-    # Step 3: Determine topic
-    topic = determine_topic(script)
-    if not topic:
-        return
+    # Step 3: Transcribe the voiceover to text
+    print("\nTranscribing voiceover to text...")
+    transcription = transcribe_audio_to_text(voiceover_file)
+    print("\nTranscription:")
+    print(transcription)
 
-    # Step 4: Fetch images
+    # Step 4: Determine topic
+    topic = "shocking history"  # Default fallback topic for rapid testing
     print("\nFetching images...")
-    fetch_images(topic, images_folder, count=10)
+    fetch_images(topic, images_folder, count=30)
 
-    # Step 5: Blur images
-    print("\nBlurring images...")
-    blurred_folder = ensure_output_folder("blurred_images")
-    for img in os.listdir(images_folder):
-        if img.endswith((".jpg", ".png")):
-            blur_image(
-                os.path.join(images_folder, img),
-                os.path.join(blurred_folder, img),
-                blur_radius=6
-            )
-
-    # Step 6: Create video from blurred images
+    # Step 5: Create video from images
     final_video_path = os.path.join(output_folder, "final_video.mp4")
     print("\nCreating video...")
-    create_video_from_images_and_audio(blurred_folder, voiceover_file, final_video_path)
+    create_video_from_images_and_audio(images_folder, voiceover_file, final_video_path)
 
-    # Step 7: Speed up the video
+    # Step 6: Speed up the video
     sped_up_video_path = os.path.join(output_folder, "final_video_sped_up.mp4")
     print("\nSpeeding up video...")
     speed_up_video(final_video_path, sped_up_video_path, speed_factor=1.25)
 
-    # Step 8: Clean up images
+    # Step 7: Clean up images
     print("\nDeleting images...")
     delete_images_in_folder(images_folder)
-    delete_images_in_folder(blurred_folder)
 
 if __name__ == "__main__":
     main()
