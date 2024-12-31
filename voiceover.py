@@ -12,6 +12,7 @@ from pydub import AudioSegment
 import soundfile as sf
 from google.cloud import speech_v1p1beta1 as speech
 import io
+import math
 
 load_dotenv()
 
@@ -123,35 +124,160 @@ def create_video_from_images_and_audio(images_folder, audio_path, output_video_p
             print("No images found in the folder. Aborting video creation.")
             return
 
-        audio = AudioFileClip(audio_path)
-        duration_per_image = max(audio.duration / len(images), 0.5)  # Ensure rapid-fire timing
+        # Set dimensions for YouTube Shorts
+        width, height = 1080, 1920
 
-        clips = [
-            add_motion_to_image(
-                img, duration=duration_per_image, zoom_start=1.0, zoom_end=1.2
-            ) for img in images
-        ]
+        audio = AudioFileClip(audio_path)
+        duration_per_image = max(audio.duration / len(images), 0.5)
+
+        clips = []
+        for img in images:
+            # Load and resize image to fill frame properly
+            image = ImageClip(img)
+            
+            # Calculate scaling to fill frame while maintaining aspect ratio
+            aspect_ratio = image.w / image.h
+            target_aspect = width / height
+
+            if aspect_ratio > target_aspect:
+                # Image is wider than frame
+                new_height = height
+                new_width = int(height * aspect_ratio)
+            else:
+                # Image is taller than frame
+                new_width = width
+                new_height = int(width / aspect_ratio)
+
+            # Resize image
+            resized_clip = image.resize((new_width, new_height))
+            
+            # Center crop to target dimensions
+            x_center = (resized_clip.w - width) // 2
+            y_center = (resized_clip.h - height) // 2
+            cropped_clip = resized_clip.crop(
+                x1=x_center,
+                y1=y_center,
+                x2=x_center + width,
+                y2=y_center + height
+            )
+
+            # Add zoom effect
+            clip = cropped_clip.set_duration(duration_per_image)
+            clip = clip.resize(lambda t: 1.0 + 0.2 * t/duration_per_image)
+
+            clips.append(clip)
+
         video = concatenate_videoclips(clips, method="compose")
         video = video.set_audio(audio)
 
-        video.write_videofile(output_video_path, codec="libx264", audio_codec="aac", fps=fps)
+        video.write_videofile(output_video_path, 
+                            codec='libx264', 
+                            audio_codec='aac',
+                            fps=fps,
+                            preset='medium',
+                            ffmpeg_params=['-pix_fmt', 'yuv420p'])
         print(f"Video created successfully: {output_video_path}")
     except Exception as e:
         print(f"Error creating video: {e}")
 
-
-def speed_up_video(input_path, output_path, speed_factor=1.25):
+# Add captions to video
+def add_captions_to_video(video_path, output_path, word_groups):
     try:
-        # Load the video clip
-        clip = VideoFileClip(input_path)
+        clip = VideoFileClip(video_path)
+        width, height = 1080, 1920
+        
+        text_clips = []
+        
+        def bounce_effect(t, clip_t, duration):
+            if t < clip_t or t > clip_t + duration:
+                return 1.0
+            progress = (t - clip_t) / duration
+            if progress < 0.15:
+                return 1.0 + 0.3 * (progress / 0.15)
+            elif progress < 0.3:
+                return 1.3 - 0.3 * ((progress - 0.15) / 0.15)
+            return 1.0 + 0.05 * math.sin(progress * 8 * math.pi)
 
-        # Speed up the video and audio
+        for group in word_groups:
+            duration = group['end_time'] - group['start_time']
+            
+            # Calculate vertical position (middle of screen)
+            y_pos = height // 2
+            
+            # Create text clip with size constraint
+            txt_clip = (TextClip(group['text'],
+                fontsize=120,
+                color='yellow',
+                stroke_color='black',
+                stroke_width=5,
+                font='Roboto-Bold.ttf',
+                size=(width * 0.9, None),  # Limit width to 90% of frame
+                method='caption',
+                align='center')
+                .set_position(('center', y_pos))  # Fixed position
+                .set_start(group['start_time'])
+                .set_duration(duration))
+
+            # Add effects
+            txt_clip = txt_clip.resize(lambda t: bounce_effect(t, group['start_time'], duration))
+            txt_clip = txt_clip.crossfadein(0.05).crossfadeout(0.05)
+
+            # Add shadow with fixed position
+            shadow = (TextClip(group['text'],
+                fontsize=120,
+                color='black',
+                stroke_width=0,
+                font='Roboto-Bold.ttf',
+                size=(width * 0.9, None),
+                method='caption',
+                align='center')
+                .set_position(('center', y_pos + 4))  # Fixed position slightly below
+                .set_start(group['start_time'])
+                .set_duration(duration)
+                .set_opacity(0.5))
+
+            text_clips.extend([shadow, txt_clip])
+
+        video_with_captions = CompositeVideoClip([clip] + text_clips, size=(width, height))
+
+        video_with_captions.write_videofile(
+            output_path,
+            codec='libx264',
+            audio_codec='aac',
+            fps=24,
+            preset='medium',
+            ffmpeg_params=['-pix_fmt', 'yuv420p']
+        )
+        
+        print(f"Video with captions saved to: {output_path}")
+    except Exception as e:
+        print(f"Error adding captions to video: {e}")
+
+def speed_up_video(input_path, output_path, speed_factor=1.5):
+    try:
+        clip = VideoFileClip(input_path)
+        
+        # Ensure we have the video FPS
+        fps = clip.fps if clip.fps else 24
+        
         sped_up_clip = clip.fx(vfx.speedx, speed_factor)
 
-        # Write the sped-up video to a file
-        sped_up_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", fps=24)
+        # Modified encoding settings
+        sped_up_clip.write_videofile(
+            output_path,
+            codec='libx264',
+            audio_codec='aac',
+            fps=fps,  # Use the original FPS or fallback to 24
+            preset='medium',
+            ffmpeg_params=['-pix_fmt', 'yuv420p']
+        )
         
         print(f"Sped-up video saved to: {output_path}")
+        
+        # Close the clips to free up resources
+        sped_up_clip.close()
+        clip.close()
+        
     except Exception as e:
         print(f"Error speeding up video: {e}")
 
@@ -167,27 +293,53 @@ def delete_images_in_folder(folder):
 def transcribe_audio_to_text(audio_path):
     client = speech.SpeechClient()
 
-    # Load the audio file
     with io.open(audio_path, "rb") as audio_file:
         content = audio_file.read()
 
-    # Configure the audio settings
     audio = speech.RecognitionAudio(content=content)
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.MP3,
-        sample_rate_hertz=44100,  # Adjust this to match your audio file
+        sample_rate_hertz=44100,
         language_code="en-US",
+        enable_word_time_offsets=True
     )
 
-    # Perform the transcription
     response = client.recognize(config=config, audio=audio)
 
-    # Collect the transcriptions
-    transcriptions = []
+    # Group into smaller phrases (1-2 words max)
+    word_groups = []
+    current_group = []
+    current_start_time = 0
+    
     for result in response.results:
-        transcriptions.append(result.alternatives[0].transcript)
+        alternative = result.alternatives[0]
+        words = alternative.words
+        
+        for i, word_info in enumerate(words):
+            current_group.append(word_info.word.upper())  # Convert to uppercase immediately
+            
+            if len(current_group) == 1:
+                current_start_time = word_info.start_time.total_seconds()
+            
+            # Create a group when we have 2 words or at punctuation or it's the last word
+            if (len(current_group) == 2 or 
+                i == len(words) - 1 or 
+                any(punct in word_info.word for punct in [',', '.', '!', '?'])):
+                
+                word_groups.append({
+                    'text': ' '.join(current_group),
+                    'start_time': current_start_time,
+                    'end_time': word_info.end_time.total_seconds()
+                })
+                current_group = []
 
-    return "\n".join(transcriptions)
+    # Add a small gap between groups for faster pacing
+    for i in range(len(word_groups)-1):
+        gap = 0.1  # 100ms gap
+        if word_groups[i]['end_time'] + gap < word_groups[i+1]['start_time']:
+            word_groups[i]['end_time'] = word_groups[i]['end_time'] + gap
+
+    return word_groups
 
 # Main function to run the pipeline
 def main():
@@ -205,13 +357,14 @@ def main():
     # Step 2: Generate the voiceover
     voiceover_file = os.path.join(output_folder, "voiceover.mp3")
     print("\nGenerating voiceover...")
-    # generate_voiceover(script, voiceover_file)
+    generate_voiceover(script, voiceover_file)
 
-    # Step 3: Transcribe the voiceover to text
+    # Step 3: Transcribe the voiceover to text with timing
     print("\nTranscribing voiceover to text...")
-    transcription = transcribe_audio_to_text(voiceover_file)
-    print("\nTranscription:")
-    print(transcription)
+    word_groups = transcribe_audio_to_text(voiceover_file)
+    print("\nTranscription with timing:")
+    for group in word_groups:
+        print(f"{group['text']}: {group['start_time']:.2f}s - {group['end_time']:.2f}s")
 
     # Step 4: Determine topic
     topic = "shocking history"  # Default fallback topic for rapid testing
@@ -223,12 +376,17 @@ def main():
     print("\nCreating video...")
     create_video_from_images_and_audio(images_folder, voiceover_file, final_video_path)
 
-    # Step 6: Speed up the video
+    # Step 6: Add captions to video (now with precise timing)
+    captioned_video_path = os.path.join(output_folder, "final_video_with_captions.mp4")
+    print("\nAdding captions to video...")
+    add_captions_to_video(final_video_path, captioned_video_path, word_groups)
+
+    # Step 7: Speed up the video
     sped_up_video_path = os.path.join(output_folder, "final_video_sped_up.mp4")
     print("\nSpeeding up video...")
-    speed_up_video(final_video_path, sped_up_video_path, speed_factor=1.25)
+    speed_up_video(captioned_video_path, sped_up_video_path, speed_factor=1.5)
 
-    # Step 7: Clean up images
+    # Step 8: Clean up images
     print("\nDeleting images...")
     delete_images_in_folder(images_folder)
 
