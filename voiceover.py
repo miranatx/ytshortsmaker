@@ -13,6 +13,7 @@ import soundfile as sf
 from google.cloud import speech_v1p1beta1 as speech
 import io
 import math
+import ffmpeg
 
 load_dotenv()
 
@@ -255,31 +256,73 @@ def add_captions_to_video(video_path, output_path, word_groups):
 
 def speed_up_video(input_path, output_path, speed_factor=1.5):
     try:
-        clip = VideoFileClip(input_path)
+        import ffmpeg
         
-        # Ensure we have the video FPS
-        fps = clip.fps if clip.fps else 24
+        # Create temporary files
+        temp_fast_video = "temp_fast_video.mp4"
+        temp_audio = "temp_audio.wav"
+        temp_fast_audio = "temp_fast_audio.wav"
         
-        sped_up_clip = clip.fx(vfx.speedx, speed_factor)
-
-        # Modified encoding settings
-        sped_up_clip.write_videofile(
+        # Extract audio from input video
+        stream = ffmpeg.input(input_path)
+        stream.audio.output(temp_audio).overwrite_output().run(capture_stdout=True, capture_stderr=True)
+        
+        # Speed up video (without audio)
+        video = VideoFileClip(input_path)
+        fast_video = video.without_audio().speedx(speed_factor)
+        fast_video.write_videofile(temp_fast_video, 
+                                 codec='libx264',
+                                 audio=False,
+                                 fps=video.fps)
+        
+        # Speed up audio with pitch correction using ffmpeg
+        try:
+            stream = ffmpeg.input(temp_audio)
+            stream = ffmpeg.filter(stream, 'atempo', str(speed_factor))
+            stream = ffmpeg.output(stream, temp_fast_audio)
+            ffmpeg.run(stream, capture_stdout=True, capture_stderr=True)
+        except ffmpeg.Error as e:
+            print('stdout:', e.stdout.decode('utf8'))
+            print('stderr:', e.stderr.decode('utf8'))
+            raise e
+        
+        # Combine fast video with pitch-corrected audio
+        fast_video = VideoFileClip(temp_fast_video)
+        fast_audio = AudioFileClip(temp_fast_audio)
+        
+        final = fast_video.set_audio(fast_audio)
+        
+        # Write final video
+        final.write_videofile(
             output_path,
             codec='libx264',
             audio_codec='aac',
-            fps=fps,  # Use the original FPS or fallback to 24
+            fps=video.fps,
             preset='medium',
             ffmpeg_params=['-pix_fmt', 'yuv420p']
         )
         
-        print(f"Sped-up video saved to: {output_path}")
+        # Clean up
+        video.close()
+        fast_video.close()
+        final.close()
         
-        # Close the clips to free up resources
-        sped_up_clip.close()
-        clip.close()
+        # Remove temporary files
+        for temp_file in [temp_fast_video, temp_audio, temp_fast_audio]:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
+        
+        print(f"Video sped up and saved to: {output_path}")
         
     except Exception as e:
         print(f"Error speeding up video: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # Cleanup on error
+        for temp_file in [temp_fast_video, temp_audio, temp_fast_audio]:
+            if os.path.exists(temp_file):
+                os.remove(temp_file)
 
 # Delete all images in the folder
 def delete_images_in_folder(folder):
@@ -341,54 +384,12 @@ def transcribe_audio_to_text(audio_path):
 
     return word_groups
 
-# Main function to run the pipeline
+# Comment out main function except for testing speed_up
 def main():
-    output_folder = ensure_output_folder()
-    images_folder = ensure_output_folder("images")
-
-    # Step 1: Generate the script
-    script = generate_script()
-    if script is None:
-        return
-
-    print("\nGenerated Script:")
-    print(script)
-
-    # Step 2: Generate the voiceover
-    voiceover_file = os.path.join(output_folder, "voiceover.mp3")
-    print("\nGenerating voiceover...")
-    generate_voiceover(script, voiceover_file)
-
-    # Step 3: Transcribe the voiceover to text with timing
-    print("\nTranscribing voiceover to text...")
-    word_groups = transcribe_audio_to_text(voiceover_file)
-    print("\nTranscription with timing:")
-    for group in word_groups:
-        print(f"{group['text']}: {group['start_time']:.2f}s - {group['end_time']:.2f}s")
-
-    # Step 4: Determine topic
-    topic = "shocking history"  # Default fallback topic for rapid testing
-    print("\nFetching images...")
-    fetch_images(topic, images_folder, count=30)
-
-    # Step 5: Create video from images
-    final_video_path = os.path.join(output_folder, "final_video.mp4")
-    print("\nCreating video...")
-    create_video_from_images_and_audio(images_folder, voiceover_file, final_video_path)
-
-    # Step 6: Add captions to video (now with precise timing)
-    captioned_video_path = os.path.join(output_folder, "final_video_with_captions.mp4")
-    print("\nAdding captions to video...")
-    add_captions_to_video(final_video_path, captioned_video_path, word_groups)
-
-    # Step 7: Speed up the video
-    sped_up_video_path = os.path.join(output_folder, "final_video_sped_up.mp4")
-    print("\nSpeeding up video...")
-    speed_up_video(captioned_video_path, sped_up_video_path, speed_factor=1.5)
-
-    # Step 8: Clean up images
-    print("\nDeleting images...")
-    delete_images_in_folder(images_folder)
+    """Test speed up function"""
+    input_video = "output/final_video_with_captions.mp4"
+    output_video = "output/final_video_sped_up.mp4"
+    speed_up_video(input_video, output_video, speed_factor=1.5)
 
 if __name__ == "__main__":
     main()
