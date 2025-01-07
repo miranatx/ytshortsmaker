@@ -33,25 +33,31 @@ def ensure_output_folder(folder="output"):
 # Generate script using OpenAI
 def generate_script():
     topics = [
-        "craziest historical deaths or assassinations",
-        "bizarre medical practices",
-        "shocking ancient rituals",
-        "wildest historical events",
-        "weird historical moments",
+        "gory scary murder story",
+        "real horror story",
+        "serial killer story",
     ]
     selected_topic = random.choice(topics)
     prompt = (
-        f"Write a gripping 30-second YouTube Short script about {selected_topic}. "
-        f"The script should be a fast-paced, attention-grabbing monologue formatted as plain text, "
-        f"with no stage directions, music cues, or narrator labels. End with a call-to-action: "
-        f"'Like and subscribe for more shocking history stories!' Focus on crazy facts, surprising twists, "
-        f"or little-known details to appeal to young adults."
+        f"Write a gripping 30-second YouTube Short script about a REAL {selected_topic}. "
+        f"Include specific details like:\n"
+        f"- Exact dates and locations\n"
+        f"- Names of real victims\n"
+        f"- Graphic details of how the crime happened\n"
+        f"- Shocking evidence found\n"
+        f"- Unexpected twists in the investigation\n"
+        f"The script should be extremely fast-paced and intense, starting with a hook like "
+        f"'In 1984, Sarah Johnson thought it was just another normal night until...' "
+        f"Pack in as many specific, horrifying details as possible in a rapid-fire style. "
+        f"Focus on the most shocking and gruesome aspects of the true story. "
+        f"End with 'Like and subscribe for more shocking true crime stories!' "
+        f"Format as plain text with no stage directions. Make it feel urgent and terrifying."
     )
     try:
         response = openai.ChatCompletion.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             messages=[
-                {"role": "system", "content": "You are a creative and engaging scriptwriter."},
+                {"role": "system", "content": "You are a true crime storyteller who specializes in shocking, detailed accounts of real events."},
                 {"role": "user", "content": prompt}
             ],
             max_tokens=300,
@@ -84,22 +90,63 @@ def generate_voiceover(script, output_file):
         print(f"Error generating voiceover: {e}")
 
 # Fetch images from Pexels API based on the topic
-def fetch_images(topic, output_folder, count=30):  # Increased to 30 images
-    url = f"https://api.pexels.com/v1/search?query={topic}&per_page={count}&orientation=portrait"
-    headers = {"Authorization": pexels_api_key}
+def fetch_images(topic, output_folder, count=15):
+    """Get random images from the local image bank"""
     try:
-        response = requests.get(url, headers=headers)
-        response.raise_for_status()
-        images = response.json().get("photos", [])
-        for i, img in enumerate(images):
-            img_url = img['src']['portrait']
-            img_path = os.path.join(output_folder, f"image_{i+1}.jpg")
-            img_data = requests.get(img_url).content
-            with open(img_path, 'wb') as f:
-                f.write(img_data)
-            print(f"Downloaded: {img_path}")
+        image_bank_path = "image_bank"
+        categories = [
+            'gore',
+            'shadows',
+            'faces',
+            'dark_scenes',
+            'crime_scenes',
+            'creepy_dolls',
+            'vintage_horror'
+        ]
+        
+        # Weight categories based on relevance (can be adjusted)
+        category_weights = {
+            'gore': 3,
+            'shadows': 2,
+            'faces': 2,
+            'dark_scenes': 2,
+            'crime_scenes': 3,
+            'creepy_dolls': 1,
+            'vintage_horror': 2
+        }
+        
+        selected_images = []
+        
+        # Get weighted random selection of categories
+        weighted_categories = []
+        for cat, weight in category_weights.items():
+            weighted_categories.extend([cat] * weight)
+        
+        # Select images from categories
+        while len(selected_images) < count:
+            category = random.choice(weighted_categories)
+            category_path = os.path.join(image_bank_path, category)
+            
+            if os.path.exists(category_path):
+                available_images = [f for f in os.listdir(category_path) 
+                                  if f.endswith(('.jpg', '.png'))]
+                
+                if available_images:
+                    img = random.choice(available_images)
+                    source_path = os.path.join(category_path, img)
+                    dest_path = os.path.join(output_folder, f"image_{len(selected_images)+1}.jpg")
+                    
+                    # Copy image to output folder
+                    shutil.copy2(source_path, dest_path)
+                    selected_images.append(dest_path)
+                    print(f"Selected: {img} from {category}")
+        
+        print(f"Selected {len(selected_images)} images from image bank")
+        return True
+        
     except Exception as e:
-        print(f"Error fetching images: {e}")
+        print(f"Error selecting images from bank: {e}")
+        return False
 
 # Blur an image using Pillow
 def blur_image(image_path, output_path, blur_radius=10):
@@ -125,11 +172,20 @@ def create_video_from_images_and_audio(images_folder, audio_path, output_video_p
             print("No images found in the folder. Aborting video creation.")
             return
 
-        # Set dimensions for YouTube Shorts
-        width, height = 1080, 1920
+        # Load main voiceover and background audio
+        voiceover = AudioFileClip(audio_path)
+        background = AudioFileClip("bg.mp3").subclip(15)  # Start at 15 seconds
+        
+        # Trim background to match voiceover length
+        background = background.subclip(0, voiceover.duration)
+        background = background.volumex(0.15)  # 15% volume
+        
+        # Combine audio tracks
+        final_audio = CompositeAudioClip([voiceover, background])
 
-        audio = AudioFileClip(audio_path)
-        duration_per_image = max(audio.duration / len(images), 0.5)
+        # Rest of video creation (unchanged)
+        width, height = 1080, 1920
+        duration_per_image = max(voiceover.duration / len(images), 0.5)
 
         clips = []
         for img in images:
@@ -169,7 +225,7 @@ def create_video_from_images_and_audio(images_folder, audio_path, output_video_p
             clips.append(clip)
 
         video = concatenate_videoclips(clips, method="compose")
-        video = video.set_audio(audio)
+        video = video.set_audio(final_audio)  # Using combined audio
 
         video.write_videofile(output_video_path, 
                             codec='libx264', 
@@ -177,9 +233,13 @@ def create_video_from_images_and_audio(images_folder, audio_path, output_video_p
                             fps=fps,
                             preset='medium',
                             ffmpeg_params=['-pix_fmt', 'yuv420p'])
-        print(f"Video created successfully: {output_video_path}")
+        
+        print(f"Video created successfully with background audio: {output_video_path}")
+        
     except Exception as e:
         print(f"Error creating video: {e}")
+        import traceback
+        traceback.print_exc()
 
 # Add captions to video
 def add_captions_to_video(video_path, output_path, word_groups):
@@ -199,23 +259,31 @@ def add_captions_to_video(video_path, output_path, word_groups):
                 return 1.3 - 0.3 * ((progress - 0.15) / 0.15)
             return 1.0 + 0.05 * math.sin(progress * 8 * math.pi)
 
+        # Define colors to alternate between
+        colors = ['yellow', 'white']
+        current_color_index = 0
+        
         for group in word_groups:
             duration = group['end_time'] - group['start_time']
+            
+            # Get current color and switch for next word
+            current_color = colors[current_color_index]
+            current_color_index = (current_color_index + 1) % len(colors)
             
             # Calculate vertical position (middle of screen)
             y_pos = height // 2
             
-            # Create text clip with size constraint
+            # Create text clip with alternating colors
             txt_clip = (TextClip(group['text'],
                 fontsize=120,
-                color='yellow',
+                color=current_color,
                 stroke_color='black',
-                stroke_width=5,
-                font='Roboto-Bold.ttf',
-                size=(width * 0.9, None),  # Limit width to 90% of frame
+                stroke_width=8,
+                font='ObelixProIt-cyr.ttf',
+                size=(width * 0.9, None),
                 method='caption',
                 align='center')
-                .set_position(('center', y_pos))  # Fixed position
+                .set_position(('center', y_pos))
                 .set_start(group['start_time'])
                 .set_duration(duration))
 
@@ -223,21 +291,7 @@ def add_captions_to_video(video_path, output_path, word_groups):
             txt_clip = txt_clip.resize(lambda t: bounce_effect(t, group['start_time'], duration))
             txt_clip = txt_clip.crossfadein(0.05).crossfadeout(0.05)
 
-            # Add shadow with fixed position
-            shadow = (TextClip(group['text'],
-                fontsize=120,
-                color='black',
-                stroke_width=0,
-                font='Roboto-Bold.ttf',
-                size=(width * 0.9, None),
-                method='caption',
-                align='center')
-                .set_position(('center', y_pos + 4))  # Fixed position slightly below
-                .set_start(group['start_time'])
-                .set_duration(duration)
-                .set_opacity(0.5))
-
-            text_clips.extend([shadow, txt_clip])
+            text_clips.append(txt_clip)
 
         video_with_captions = CompositeVideoClip([clip] + text_clips, size=(width, height))
 
@@ -254,7 +308,7 @@ def add_captions_to_video(video_path, output_path, word_groups):
     except Exception as e:
         print(f"Error adding captions to video: {e}")
 
-def speed_up_video(input_path, output_path, speed_factor=1.5):
+def speed_up_video(input_path, output_path, speed_factor=1.23):
     try:
         import ffmpeg
         
@@ -384,12 +438,91 @@ def transcribe_audio_to_text(audio_path):
 
     return word_groups
 
+def determine_topic(script):
+    prompt = (
+        f"Given this script: \"{script}\", determine the main topic in one or two words. "
+        "It should relate broadly to the content but doesn't have to match the exact event. "
+        "For example, for Apollo 11, use 'space'."
+    )
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=20,
+            temperature=0.7,
+        )
+        topic = response['choices'][0]['message']['content'].strip()
+        print(f"Identified Topic: {topic}")
+        return topic
+    except Exception as e:
+        print(f"Error determining topic: {e}")
+        return None
+
 # Comment out main function except for testing speed_up
 def main():
-    """Test speed up function"""
-    input_video = "output/final_video_with_captions.mp4"
-    output_video = "output/final_video_sped_up.mp4"
-    speed_up_video(input_video, output_video, speed_factor=1.5)
+    try:
+        # Create output folder
+        output_folder = ensure_output_folder()
+        images_folder = ensure_output_folder("images")
+
+        # Step 1: Generate script
+        print("\nGenerating script...")
+        script = generate_script()
+        if not script:
+            return
+        print(f"\nGenerated Script:\n{script}\n")
+
+        # Step 2: Determine main topic for image search
+        print("\nDetermining main topic for images...")
+        search_topic = determine_topic(script)
+        if not search_topic:
+            search_topic = " ".join(script.split()[0:3])  # Fallback to first 3 words
+        print(f"Using search topic: {search_topic}")
+
+        # Step 3: Generate voiceover
+        print("\nGenerating voiceover...")
+        voiceover_file = os.path.join(output_folder, "voiceover.mp3")
+        # generate_voiceover(script, voiceover_file)
+
+        # Step 4: Transcribe the voiceover to text with timing
+        print("\nTranscribing voiceover to text...")
+        word_groups = transcribe_audio_to_text(voiceover_file)
+        print("\nTranscription with timing:")
+        for group in word_groups:
+            print(f"{group['text']}: {group['start_time']:.2f}s - {group['end_time']:.2f}s")
+
+        # Step 5: Fetch and process images using determined topic
+        print(f"\nFetching images for topic: {search_topic}...")
+        fetch_images(search_topic, images_folder)
+
+        # Step 6: Create base video
+        print("\nCreating video from images and audio...")
+        base_video = os.path.join(output_folder, "base_video.mp4")
+        create_video_from_images_and_audio(images_folder, voiceover_file, base_video)
+
+        # Step 7: Add captions
+        print("\nAdding captions to video...")
+        captioned_video = os.path.join(output_folder, "final_video_with_captions.mp4")
+        add_captions_to_video(base_video, captioned_video, word_groups)
+
+        # Step 8: Speed up the video
+        print("\nSpeeding up video...")
+        final_video = os.path.join(output_folder, "final_video_sped_up.mp4")
+        speed_up_video(captioned_video, final_video, speed_factor=1.2)
+
+        # Clean up images
+        delete_images_in_folder(images_folder)
+
+        print("\nVideo generation complete!")
+        print(f"Final video saved to: {final_video}")
+
+    except Exception as e:
+        print(f"Error in main process: {e}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == "__main__":
     main()
